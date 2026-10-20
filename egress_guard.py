@@ -52,16 +52,25 @@ class CanaryLeakDetector:
     def check_leak(cls, output_text: str, canary_token: Optional[str] = None) -> bool:
         """
         Tra ve True neu phat hien ro ri canary token.
-        Kiem tra ca token cu the lan cac pattern canary chung.
+        Kiem tra ca token cu the, cac pattern canary chung,
+        va ca suffix bi mat (chong jailbreak yeu cau dich, danh van, chen khoang trang).
         """
         if not output_text:
             return False
-        # Check specific token
+            
+        clean_output = re.sub(r"[\s\-_.:]+", "", output_text).upper()
+        
+        # Check specific token & its suffix
         if canary_token:
-            clean_output = re.sub(r"\s+", "", output_text).upper()
-            clean_canary = re.sub(r"\s+", "", canary_token).upper()
+            clean_canary = re.sub(r"[\s\-_.:]+", "", canary_token).upper()
             if clean_canary in clean_output:
                 return True
+            # Check 8-char secret suffix (e.g. A1B2C3D4 from CANARY_SEC_A1B2C3D4)
+            if "_" in canary_token:
+                suffix = canary_token.split("_")[-1].upper()
+                if len(suffix) >= 6 and suffix in clean_output:
+                    return True
+                    
         # Check known patterns
         for pattern in cls.KNOWN_CANARY_PATTERNS:
             if pattern.search(output_text):

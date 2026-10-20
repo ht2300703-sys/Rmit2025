@@ -74,20 +74,47 @@ class EndToEndDefensePipeline:
         }
 
         # ------------------------------------------------------------------ #
-        # TANG 1: INGRESS GUARDRAIL
+        # TANG 1: INGRESS GUARDRAIL (With LRL & Code-Switching Dynamic Threshold & Translation Pivot)
         # ------------------------------------------------------------------ #
         if self.ingress_classifier is not None:
+            from src.preprocessing import detect_code_switching_and_lrl, compute_subword_fertility_rate, UniversalTranslator
+
             is_malicious, risk_score = self.ingress_classifier(user_prompt)
             result["ingress_score"] = float(risk_score)
-            if self.verbose:
-                print(f"[Pipeline] Tang 1 Ingress: malicious={is_malicious}, score={risk_score:.4f}")
 
-            if is_malicious or risk_score >= self.ingress_threshold:
+            lrl_meta = detect_code_switching_and_lrl(user_prompt)
+            sfr_score = compute_subword_fertility_rate(user_prompt)
+            effective_threshold = self.ingress_threshold
+
+            # Neu phat hien LRL hoac Code-switching:
+            # 1. Tu dong ha nguong chan (Dynamic thresholding)
+            # 2. Chay kiem tra kep tren ban dich pivot (Dual-check cross-translation)
+            is_lrl_threat = lrl_meta["needs_translation"] or sfr_score > 1.8
+            if is_lrl_threat:
+                effective_threshold = max(0.20, self.ingress_threshold - 0.15)
+                result["details"]["lrl_dynamic_threshold_applied"] = True
+                result["details"]["effective_threshold"] = effective_threshold
+
+                # Kiem tra tren ban dich pivot (tieng Anh/chuan hoa)
+                pivot_text = UniversalTranslator.translate_to_pivot(user_prompt, target_lang="en")
+                if pivot_text and pivot_text.strip() != user_prompt.strip():
+                    _, pivot_risk = self.ingress_classifier(pivot_text)
+                    result["details"]["pivot_text"] = pivot_text
+                    result["details"]["pivot_risk_score"] = float(pivot_risk)
+                    # Lay diem rui ro cao nhat giua ban goc va ban dich
+                    if pivot_risk > risk_score:
+                        risk_score = float(pivot_risk)
+                        result["ingress_score"] = risk_score
+
+            if self.verbose:
+                print(f"[Pipeline] Tang 1 Ingress: malicious={is_malicious}, score={risk_score:.4f}, effective_th={effective_threshold:.4f}")
+
+            if is_malicious or risk_score >= effective_threshold:
                 result["status"] = "BLOCKED"
                 result["blocked_at_layer"] = "LAYER_1_INGRESS"
                 result["blocked_reason"] = (
                     f"Ingress classifier triggered (Risk score: {risk_score:.4f} "
-                    f">= {self.ingress_threshold:.4f})"
+                    f">= Effective Threshold: {effective_threshold:.4f})"
                 )
                 result["response"] = (
                     "Yeu cau cua ban da bi tu choi boi bo loc an toan dau vao (Ingress Guardrail)."
